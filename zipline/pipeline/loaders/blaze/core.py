@@ -153,6 +153,7 @@ from datashape import (
     isscalar,
     integral,
 )
+from interface import implements
 import numpy as np
 from odo import odo
 import pandas as pd
@@ -176,19 +177,33 @@ from zipline.pipeline.common import (
 )
 from zipline.pipeline.data.dataset import DataSet, Column
 from zipline.pipeline.domain import GENERIC
+from zipline.pipeline.loaders.base import PipelineLoader
 from zipline.pipeline.sentinels import NotSpecified
 from zipline.lib.adjusted_array import can_represent_dtype
 from zipline.utils.input_validation import expect_element
 from zipline.utils.pandas_utils import ignore_pandas_nan_categorical_warning
 from zipline.utils.pool import SequentialPool
-from ._core import (  # noqa
-    adjusted_arrays_from_rows_with_assets,
-    adjusted_arrays_from_rows_without_assets,
-    baseline_arrays_from_rows_with_assets,  # reexport
-    baseline_arrays_from_rows_without_assets,  # reexport
-    getname,
-)
+try:
+    from ._core import (  # noqa
+        adjusted_arrays_from_rows_with_assets,
+        adjusted_arrays_from_rows_without_assets,
+        baseline_arrays_from_rows_with_assets,  # reexport
+        baseline_arrays_from_rows_without_assets,  # reexport
+        getname,
+    )
+except ImportError:
+    def getname(column):
+        return column.get('blaze_column_name', column.name)
 
+    def barf(*args, **kwargs):
+        raise RuntimeError(
+            "zipline.pipeline.loaders.blaze._core failed to import"
+        )
+
+    adjusted_arrays_from_rows_with_assets = barf
+    adjusted_arrays_from_rows_without_assets = barf
+    baseline_arrays_from_rows_with_assets = barf
+    baseline_arrays_from_rows_without_assets = barf
 
 valid_deltas_node_types = (
     bz.expr.Field,
@@ -439,7 +454,13 @@ def _get_metadata(field, expr, metadata_expr, no_metadata_rule):
         return metadata_expr
 
     try:
-        return expr._child['_'.join(((expr._name or ''), field))]
+        # The error produced by expr[field_name] when field_name doesn't exist
+        # is very expensive. Avoid that cost by doing the check ourselves.
+        field_name = '_'.join(((expr._name or ''), field))
+        child = expr._child
+        if field_name not in child.fields:
+            raise AttributeError(field_name)
+        return child[field_name]
     except (ValueError, AttributeError):
         if no_metadata_rule == 'raise':
             raise ValueError(
@@ -786,7 +807,7 @@ class ExprData(object):
         )
 
 
-class BlazeLoader(object):
+class BlazeLoader(implements(PipelineLoader)):
     """A PipelineLoader for datasets constructed with ``from_blaze``.
 
     Parameters
